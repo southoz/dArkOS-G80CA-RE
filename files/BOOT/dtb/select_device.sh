@@ -10,6 +10,7 @@ CYAN='\033[0;36m'
 DCYAN='\033[1;36m'
 NC='\033[0m'
 
+
 echo ""
 echo -e "${CYAN}==================================================${NC}"
 echo -e "${CYAN}   R36S DTB Firmware Selector${NC}"
