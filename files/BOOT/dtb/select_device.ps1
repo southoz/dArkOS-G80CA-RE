@@ -203,37 +203,95 @@ if ($confirm -notmatch '^[Yy]$') {
     exit 0
 }
 
-# === Apply changes ===
-Write-Host "`nDeleting old .dtb files in root..." -ForegroundColor Yellow
-Get-ChildItem -Path $rootDir -Filter "*.dtb" -File | ForEach-Object {
-    Remove-Item $_.FullName -Force
-    Write-Host "  Deleted $($_.Name)"
-}
+# === Apply changes (atomic with rollback) ===
+# The boot partition must never be left without its .dtb / logo files.
+# Strategy: stage the incoming files and a backup of the current ones into a
+# temp area, install the new files into root, and only then remove the old
+# files they supersede. If any step throws, the backup is restored so the
+# device is returned to its previous (bootable) state.
+$staging = Join-Path $env:TEMP ("dtb_stage_" + [guid]::NewGuid().ToString("N"))
+$backup  = Join-Path $env:TEMP ("dtb_backup_" + [guid]::NewGuid().ToString("N"))
+$stagedDtbs = @()
 
-Write-Host "`nRemoving existing logo.bmp..." -ForegroundColor Yellow
-$oldLogo = Join-Path $rootDir "logo.bmp"
-if (Test-Path $oldLogo) {
-    Remove-Item $oldLogo -Force
-    Write-Host "  logo.bmp deleted"
-} else {
-    Write-Host "  No logo.bmp present"
-}
+try {
+    # 1. Stage the new DTB files (and logo, if any) off the boot volume.
+    #    Reading them into a temp dir first means a bad/unreadable source
+    #    fails here, before anything on the boot volume is touched.
+    New-Item -ItemType Directory -Path $staging -Force | Out-Null
+    Copy-Item -Path "$sourceFolder\*.dtb" -Destination $staging -Force -ErrorAction Stop
+    if ($logoSrc -and (Test-Path $logoSrc)) {
+        Copy-Item -Path $logoSrc -Destination (Join-Path $staging "logo.bmp") -Force -ErrorAction Stop
+    }
+    $stagedDtbs = @(Get-ChildItem -Path $staging -Filter "*.dtb" -File)
+    if ($stagedDtbs.Count -eq 0) {
+        throw "No DTB files found in source folder: $sourceFolder"
+    }
+    Write-Host "`nStaged $($stagedDtbs.Count) new DTB file(s)." -ForegroundColor Yellow
 
-Write-Host "`nCopying new DTB files to root..." -ForegroundColor Yellow
-$copied = Copy-Item -Path "$sourceFolder\*" -Destination $rootDir -Force -Include "*.dtb" -PassThru -ErrorAction Stop
-if ($copied.Count -gt 0) {
-    $copied | ForEach-Object { Write-Host "  Copied $($_.Name)" }
-} else {
-    Write-Host "  No DTB files copied" -ForegroundColor Yellow
-}
+    # 2. Back up the files currently in root so we can roll back.
+    New-Item -ItemType Directory -Path $backup -Force | Out-Null
+    Get-ChildItem -Path $rootDir -Filter "*.dtb" -File -ErrorAction SilentlyContinue |
+        ForEach-Object { Copy-Item $_.FullName $backup -Force }
+    $rootLogo = Join-Path $rootDir "logo.bmp"
+    if (Test-Path $rootLogo) { Copy-Item $rootLogo $backup -Force }
 
-# Copy correct logo and rename to logo.bmp
-if ($logoSrc -and (Test-Path $logoSrc)) {
-    Write-Host "`nInstalling logo..." -ForegroundColor Yellow
-    Copy-Item -Path $logoSrc -Destination (Join-Path $rootDir "logo.bmp") -Force
-    Write-Host "  logo.bmp installed (from $resolution resolution)"
-} else {
-    Write-Host "  No logo installed (missing source or unknown resolution)" -ForegroundColor Yellow
+    # 3. Install: copy the staged files over the ones in root.
+    Write-Host "`nInstalling new DTB files to root..." -ForegroundColor Yellow
+    Copy-Item -Path "$staging\*.dtb" -Destination $rootDir -Force -ErrorAction Stop
+    $stagedDtbs | ForEach-Object { Write-Host "  Installed $($_.Name)" }
+
+    if ($logoSrc -and (Test-Path $logoSrc)) {
+        Write-Host "`nInstalling logo..." -ForegroundColor Yellow
+        Copy-Item -Path (Join-Path $staging "logo.bmp") -Destination $rootLogo -Force -ErrorAction Stop
+        Write-Host "  logo.bmp installed (from $resolution resolution)"
+    } else {
+        Write-Host "  No logo installed (missing source or unknown resolution)" -ForegroundColor Yellow
+    }
+
+    # 4. Remove old .dtb files that the new set did not replace. Extra .dtb
+    #    files are harmless to the bootloader, but we tidy them up for parity
+    #    with the previous behaviour. Only now, after a successful install, is
+    #    it safe to delete them.
+    Write-Host "`nRemoving superseded .dtb files..." -ForegroundColor Yellow
+    $keep = $stagedDtbs.Name
+    $superseded = @(Get-ChildItem -Path $rootDir -Filter "*.dtb" -File |
+                    Where-Object { $_.Name -notin $keep })
+    if ($superseded.Count -eq 0) {
+        Write-Host "  (no superseded files to remove)"
+    } else {
+        $superseded | ForEach-Object {
+            Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+            Write-Host "  Removed $($_.Name)"
+        }
+    }
+
+    Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $backup  -Recurse -Force -ErrorAction SilentlyContinue
+}
+catch {
+    # Rollback: restore the backed-up files so the device still boots.
+    Write-Host "`nERROR during update - rolling back." -ForegroundColor Red
+    Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+    if (Test-Path $backup) {
+        # Restore the original files, then discard any new files the failed
+        # install already wrote, so root matches its pre-update state exactly.
+        # Each step is best-effort so one locked file can't abort the rollback.
+        Get-ChildItem -Path $backup -File | ForEach-Object {
+            try { Copy-Item $_.FullName $rootDir -Force -ErrorAction Stop } catch { }
+        }
+        $origNames = (Get-ChildItem -Path $backup -File).Name
+        Get-ChildItem -Path $rootDir -Filter "*.dtb" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin $origNames } |
+            ForEach-Object { try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch { } }
+        if ((-not (Test-Path (Join-Path $backup "logo.bmp"))) -and (Test-Path (Join-Path $rootDir "logo.bmp"))) {
+            try { Remove-Item (Join-Path $rootDir "logo.bmp") -Force -ErrorAction Stop } catch { }
+        }
+        Write-Host "Previous files restored from backup." -ForegroundColor Yellow
+    }
+    Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $backup  -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Boot volume returned to its prior state. No changes applied." -ForegroundColor Red
+    exit 1
 }
 
 Write-Host "`n==================================================" -ForegroundColor Green
