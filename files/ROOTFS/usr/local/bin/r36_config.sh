@@ -277,6 +277,12 @@ log "=== Starting ALSA audio configuration ==="
 
 CUR_ALSA_PATH=$(grep '^alsa_path[ \t]*=' "$CONFIG_FILE" | cut -d'=' -f2 | xargs || echo "$ALSA_PATH")
 log "Applying ALSA Playback Path: $CUR_ALSA_PATH"
+# rk817 clone boards (e.g. G80CA-MB) power up with 'Playback Path' already at the
+# target value, so re-setting the same value is a no-op: the codec never reprograms
+# the output route and there is NO audio on cold boot until a suspend/resume.
+# Force a real transition (OFF -> target) so the driver reprograms/enables the route.
+amixer -c 0 cset iface=MIXER,name='Playback Path' 'OFF' 2>>"$LOG_FILE" || true
+sleep 1
 amixer -c 0 cset iface=MIXER,name='Playback Path' "$CUR_ALSA_PATH" 2>>"$LOG_FILE" || log "WARNING: amixer Playback Path failed"
 
 OGAGE_SRC="$OGAGE_DIR/ogage.${CUR_ALSA_PATH}"
