@@ -289,11 +289,36 @@ else
     echo -e "${YELLOW}  No files were copied (source may be empty)${NC}"
 fi
  
+# -- Apply resolution-matched splash image --
+# Mirrors the behaviour already present in select_device.ps1, which picks the
+# logo from the device's `resolution` key. Built from the resolution string so
+# new panel sizes need no code change.
+resolution="${section_values["${chosen}__resolution"]:-}"
+logo_dir="$ROOT_DIR/dtb/logo"
+
+echo ""
+echo -e "${YELLOW}Applying boot logo for resolution: ${resolution:-unknown}${NC}"
+
+if [[ -z "$resolution" ]]; then
+    echo -e "${YELLOW}  No 'resolution' key for $chosen - leaving logo.bmp untouched${NC}"
+elif [[ ! -d "$logo_dir" ]]; then
+    echo -e "${YELLOW}  No dtb/logo folder found - skipping${NC}"
+else
+    src_logo="$logo_dir/logo-${resolution}.bmp"
+    if [[ -f "$src_logo" ]]; then
+        cp -f "$src_logo" "$ROOT_DIR/logo.bmp"
+        echo "  logo.bmp <- $(basename "$src_logo")"
+    else
+        echo -e "${YELLOW}  No logo-${resolution}.bmp - leaving logo.bmp untouched${NC}"
+    fi
+fi
+
 echo ""
 echo -e "${GREEN}==================================================${NC}"
 echo -e "${GREEN}   SUCCESS - DTB files updated for:${NC}"
 echo -e "${WHITE}   $chosen${NC}"
 echo -e "${WHITE}   Variant: $variant${NC}"
+echo -e "${WHITE}   Resolution: ${resolution:-unknown}${NC}"
 echo -e "${GREEN}==================================================${NC}"
 echo ""
  
