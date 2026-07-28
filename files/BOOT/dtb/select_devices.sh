@@ -289,11 +289,57 @@ else
     echo -e "${YELLOW}  No files were copied (source may be empty)${NC}"
 fi
  
+# -- Apply resolution-matched splash image --
+# Mirrors the behaviour already present in select_device.ps1, which picks the
+# logo from the device's `resolution` key. Built from the resolution string so
+# new panel sizes need no code change.
+resolution="${section_values["${chosen}__resolution"]:-}"
+logo_dir="$ROOT_DIR/dtb/logo"
+
+echo ""
+echo -e "${YELLOW}Applying boot images for resolution: ${resolution:-unknown}${NC}"
+
+if [[ -z "$resolution" ]]; then
+    echo -e "${YELLOW}  No 'resolution' key for $chosen - leaving logo.bmp untouched${NC}"
+elif [[ ! -d "$logo_dir" ]]; then
+    echo -e "${YELLOW}  No dtb/logo folder found - skipping${NC}"
+else
+    src_logo="$logo_dir/logo-${resolution}.bmp"
+    if [[ -f "$src_logo" ]]; then
+        cp -f "$src_logo" "$ROOT_DIR/logo.bmp"
+        echo "  logo.bmp <- $(basename "$src_logo")"
+    else
+        echo -e "${YELLOW}  No logo-${resolution}.bmp - leaving logo.bmp untouched${NC}"
+    fi
+
+    # Battery images are resolution-specific too, and neither selector script
+    # installs them today. Archive names do not always match the resolution
+    # exactly (720x720 panels ship battery-720x270.zip), so fall back to width.
+    res_width="${resolution%%x*}"
+    src_batt="$logo_dir/battery-${resolution}.zip"
+    if [[ ! -f "$src_batt" ]]; then
+        src_batt="$(find "$logo_dir" -maxdepth 1 -type f -name "battery-${res_width}x*.zip" 2>/dev/null | head -n 1)"
+    fi
+
+    if [[ -n "$src_batt" && -f "$src_batt" ]]; then
+        if command -v unzip >/dev/null 2>&1; then
+            rm -f "$ROOT_DIR"/battery_*.bmp
+            unzip -o -q "$src_batt" -d "$ROOT_DIR/"
+            echo "  battery_*.bmp <- $(basename "$src_batt")"
+        else
+            echo -e "${YELLOW}  unzip unavailable - extract $(basename "$src_batt") to root manually${NC}"
+        fi
+    else
+        echo -e "${YELLOW}  No battery archive matching ${resolution} - skipping${NC}"
+    fi
+fi
+
 echo ""
 echo -e "${GREEN}==================================================${NC}"
 echo -e "${GREEN}   SUCCESS - DTB files updated for:${NC}"
 echo -e "${WHITE}   $chosen${NC}"
 echo -e "${WHITE}   Variant: $variant${NC}"
+echo -e "${WHITE}   Resolution: ${resolution:-unknown}${NC}"
 echo -e "${GREEN}==================================================${NC}"
 echo ""
  
