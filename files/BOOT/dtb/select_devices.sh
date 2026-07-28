@@ -297,7 +297,7 @@ resolution="${section_values["${chosen}__resolution"]:-}"
 logo_dir="$ROOT_DIR/dtb/logo"
 
 echo ""
-echo -e "${YELLOW}Applying boot logo for resolution: ${resolution:-unknown}${NC}"
+echo -e "${YELLOW}Applying boot images for resolution: ${resolution:-unknown}${NC}"
 
 if [[ -z "$resolution" ]]; then
     echo -e "${YELLOW}  No 'resolution' key for $chosen - leaving logo.bmp untouched${NC}"
@@ -310,6 +310,27 @@ else
         echo "  logo.bmp <- $(basename "$src_logo")"
     else
         echo -e "${YELLOW}  No logo-${resolution}.bmp - leaving logo.bmp untouched${NC}"
+    fi
+
+    # Battery images are resolution-specific too, and neither selector script
+    # installs them today. Archive names do not always match the resolution
+    # exactly (720x720 panels ship battery-720x270.zip), so fall back to width.
+    res_width="${resolution%%x*}"
+    src_batt="$logo_dir/battery-${resolution}.zip"
+    if [[ ! -f "$src_batt" ]]; then
+        src_batt="$(find "$logo_dir" -maxdepth 1 -type f -name "battery-${res_width}x*.zip" 2>/dev/null | head -n 1)"
+    fi
+
+    if [[ -n "$src_batt" && -f "$src_batt" ]]; then
+        if command -v unzip >/dev/null 2>&1; then
+            rm -f "$ROOT_DIR"/battery_*.bmp
+            unzip -o -q "$src_batt" -d "$ROOT_DIR/"
+            echo "  battery_*.bmp <- $(basename "$src_batt")"
+        else
+            echo -e "${YELLOW}  unzip unavailable - extract $(basename "$src_batt") to root manually${NC}"
+        fi
+    else
+        echo -e "${YELLOW}  No battery archive matching ${resolution} - skipping${NC}"
     fi
 fi
 
